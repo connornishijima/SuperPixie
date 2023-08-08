@@ -1,3 +1,5 @@
+![Banner](https://raw.githubusercontent.com/connornishijima/SuperPixie/main/extras/img/banner.png)
+
 ## This is a pre-release preview of SuperPixie code!
 
 (It's ugly, undocumented, unorganized, and unfinished!)
