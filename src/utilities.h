@@ -27,3 +27,117 @@ void integer_to_ascii(uint32_t input_integer, char* output_array) {
   // Null-terminate the array to make it a valid C-style string
   output_array[3] = '\0';
 }
+
+
+
+
+
+
+
+void debug(uint8_t val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(uint16_t val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(uint32_t val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(int8_t val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(int16_t val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(int32_t val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(float val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(char val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debug(char* val){
+  if(debug_mode == true){
+    Serial.print(val);
+  }
+}
+
+void debugln(uint8_t val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debugln(uint16_t val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debugln(uint32_t val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debugln(int8_t val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debulng(int16_t val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debugln(int32_t val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debugln(float val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debugln(char val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}
+
+void debugln(char* val){
+  if(debug_mode == true){
+    Serial.println(val);
+  }
+}

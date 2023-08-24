@@ -11,7 +11,11 @@
 #define superpixie_h
 
 #include "Arduino.h"
+#include <SoftwareSerial.h>
 #include "FastLED.h"
+
+// ISR libraries
+#include <Ticker.h>
 
 // Used to signify start and end of packets
 #define SYNC_PATTERN_1 0b11001100
@@ -24,10 +28,15 @@
 #define ADDRESS_NULL      254
 #define ADDRESS_COMMANDER 253
 
-// UART objects
-#define chain Serial
+#define DEFAULT_CHAIN_BAUD (38400)
+#define DEBUG_BAUD (230400)
 
-#define ACK_TIMEOUT_MS 100
+#define ACK_TIMEOUT_MS (60)
+
+#define RESET_PULSE_DURATION_MS (10)
+
+//#define debug Serial
+#define debug_mode 1
 
 typedef enum {
   TRANSITION_INSTANT,
@@ -57,36 +66,41 @@ typedef enum {
 
 // Possible UART commands
 typedef enum {
-  COM_NULL,
-  COM_ACK,
-  COM_PROBE,
-  COM_BLINK,
-  COM_RESET_CHAIN,
-  COM_ENABLE_PROPAGATION,
-  COM_ASSIGN_ADDRESS,
-  COM_SET_BAUD,
-  COM_SET_DEBUG_LED,
-  COM_SET_DEBUG_DIGIT,
-  COM_SET_BRIGHTNESS,
-  COM_SET_COLORS,
-  COM_SHOW,
-  COM_SEND_STRING,
-  COM_ANNOUNCE,
-  COM_SET_TRANSITION_TYPE,
-  COM_SET_TRANSITION_DURATION_MS,
-  COM_SET_FRAME_BLENDING,
-  COM_SET_FX_COLOR,
-  COM_SET_FX_OPACITY,
-  COM_SET_FX_BLUR,
-  COM_SET_GRADIENT_TYPE,
-  COM_TOUCH_EVENT,
-  COM_FORCE_TRANSITION,
-  COM_SCROLL_STRING,
-  COM_SET_CHAIN_LENGTH,
-  COM_SET_SCROLL_SPEED,
-  COM_GET_READY_STATUS,
-  COM_READY_STATUS,
-
+  /* 0  */ COM_NULL,
+  /* 1  */ COM_ACK,
+  /* 2  */ COM_PROBE,
+  /* 3  */ COM_BLINK,
+  /* 4  */ COM_RESET_CHAIN,
+  /* 5  */ COM_ENABLE_PROPAGATION,
+  /* 6  */ COM_ASSIGN_ADDRESS,
+  /* 7  */ COM_SET_BAUD,
+  /* 8  */ COM_SET_DEBUG_LED,
+  /* 9  */ COM_SET_DEBUG_DIGIT,
+  /* 10 */ COM_SET_BRIGHTNESS,
+  /* 11 */ COM_SET_COLORS,
+  /* 12 */ COM_SHOW,
+  /* 13 */ COM_SEND_STRING,
+  /* 14 */ COM_ANNOUNCE,
+  /* 15 */ COM_SET_TRANSITION_TYPE,
+  /* 16 */ COM_SET_TRANSITION_DURATION_MS,
+  /* 17 */ COM_SET_FRAME_BLENDING,
+  /* 18 */ COM_SET_FX_COLOR,
+  /* 19 */ COM_SET_FX_OPACITY,
+  /* 20 */ COM_SET_FX_BLUR,
+  /* 21 */ COM_SET_GRADIENT_TYPE,
+  /* 22 */ COM_TOUCH_EVENT,
+  /* 23 */ COM_FORCE_TRANSITION,
+  /* 24 */ COM_SCROLL_STRING,
+  /* 25 */ COM_SET_CHAIN_LENGTH,
+  /* 26 */ COM_SET_SCROLL_SPEED,
+  /* 27 */ COM_GET_READY_STATUS,
+  /* 28 */ COM_READY_STATUS,
+  /* 29 */ COM_HOLD_IMAGE,
+  /* 30 */ COM_GET_TOUCH_STATE,
+  /* 31 */ COM_TOUCH_STATE,
+  /* 32 */ COM_ENABLE_FAST_MODE,
+  /* 33 */ COM_PANIC,
+  
   NUM_COMMANDS
 } command_t;
 
@@ -99,10 +113,11 @@ typedef enum {
 class SuperPixie{
 	public:
 		/** @brief Construct a SuperPixie class object */
-		SuperPixie(); 
+		SuperPixie();
 		
 		/*+-- Functions - Setup ------------------------------------------------------------*/ 
-		/*|*/ void begin( uint32_t chain_baud );
+		/*|*/ void begin(uint8_t data_a_pin, uint8_t data_b_pin, uint32_t baud_rate = DEFAULT_CHAIN_BAUD);
+		/*|*/ void set_baud_rate( uint32_t new_baud );
 		/*+-- Functions - print(  ) --------------------------------------------------------*/ 
 		/*|*/ void set_string( char* string );
 		/*|*/ void scroll_string( char* string );
@@ -119,9 +134,13 @@ class SuperPixie{
 		/*|*/ void set_color( CRGB color_a, CRGB color_b );
 		/*|*/ void set_gradient_type( gradient_type_t type );
 		/*|*/ void clear();
+		/*|*/ void hold();
 		/*|*/ void show();
 		/*|*/ void wait();
 		/*+-- Functions - Debug ------------------------------------------------------------*/
+
+		int8_t read_touch(uint8_t chain_index);
+		void read();
 
 		/*+---------------------------------------------------------------------------------*/
 
@@ -133,19 +152,25 @@ class SuperPixie{
 		// Current packet ID (sequential)
 		uint16_t packet_id = 0;
 
-	private:
+	private:		
+		uint8_t data_a_pin_;
+		uint8_t data_b_pin_;
+		SoftwareSerial chain;
+		
 		// Functions ----------------------------------
-		void init_system(uint32_t chain_baud);
-		void init_uart(uint32_t chain_baud);
+		void init_system(uint8_t data_a_pin, uint8_t data_b_pin, uint32_t baud_rate);
+		void init_uart(uint8_t data_a_pin, uint8_t data_b_pin);
 		void discover_nodes();
+		void consume_serial();
 		bool await_ack(uint32_t packet_id);
 		void feed_byte_into_sync_buffer(uint8_t incoming_byte);
 		void feed_byte_into_packet_buffer(uint8_t incoming_byte);
 		void init_packet();
 		void parse_packet();
 		void execute_packet(uint16_t packet_id, uint8_t origin_address, uint8_t first_hop_address, command_t packet_type, bool needs_ack, uint8_t data_length_in_bytes, uint8_t data_start_position);
-		void consume_serial();
 		void announce_new_chain_length(uint8_t length);
+		void measure_chain_length();
+		void init_serial_isr();
 		
 		uint8_t NULL_DATA[1] = {0};
 		
@@ -162,10 +187,20 @@ class SuperPixie{
 		uint16_t packet_acks[8][2] = { 0 };
 		uint8_t packet_acks_index = 0;
 		
+		bool *touch_response;
+		int8_t *touch_state;
+		
 		bool touch_status = false;
 		uint8_t touch_node = 0;
 		
 		bool waiting = false;
+		
+		uint16_t serial_read_hz = 20;
+		
+		// ISR variables
+		Ticker serial_checker;
+		
+		bool chain_initialized = false;
 	};
-
+	
 #endif

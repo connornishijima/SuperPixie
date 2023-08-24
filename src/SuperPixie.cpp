@@ -16,48 +16,181 @@
 
 SuperPixie::SuperPixie(){}
 
-
 // %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 // %% FUNCTIONS - SETUP %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 // %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-void SuperPixie::begin( uint32_t chain_baud ){
-	init_system(chain_baud);
+void SuperPixie::begin( uint8_t data_a_pin, uint8_t data_b_pin, uint32_t baud_rate ) {	
+	if(debug_mode == true){
+		Serial.begin(DEBUG_BAUD);
+	}
+	debugln("----- begin()");
+
+	init_system(data_a_pin, data_b_pin, baud_rate);
+	
+	chain_initialized = true;
 }
+
+
+void SuperPixie::set_baud_rate( uint32_t new_baud ){
+	uint8_t baud_data[4] = {
+		get_byte_from_uint32(new_baud, 3),
+		get_byte_from_uint32(new_baud, 2),
+		get_byte_from_uint32(new_baud, 1),
+		get_byte_from_uint32(new_baud, 0)
+	};
+	
+	send_packet(ADDRESS_BROADCAST, COM_SET_BAUD, baud_data, 4, false);
+	
+	chain.flush();
+	chain.end();
+	chain.begin(new_baud, SWSERIAL_8N1, data_a_pin_, data_b_pin_);
+}
+
 
 // Bootup sequence
-void SuperPixie::init_system(uint32_t chain_baud){
-	init_uart(chain_baud);
+void SuperPixie::init_system( uint8_t data_a_pin, uint8_t data_b_pin, uint32_t baud_rate ){
+	debug("----- init_system(");
+	debug(data_a_pin);
+	debug(",");
+	debug(data_b_pin);
+	debug(",");
+	debug(baud_rate);
+	debugln(")");
+	
+	pinMode(2, OUTPUT);
+	digitalWrite(2, HIGH);
+	
+	// SEND RESET PULSE
+	pinMode(data_a_pin, OUTPUT);
+	digitalWrite(data_a_pin, LOW);
+	delay(RESET_PULSE_DURATION_MS << 1);
+	digitalWrite(data_a_pin, HIGH);
+	pinMode(data_a_pin, INPUT);
+	
+	init_uart(data_b_pin, data_a_pin);
+	delay(400);
+		
 	discover_nodes();
+	
+	init_serial_isr();
+	
+	debugln("INIT SYSTEM COMPLETE");
 }
 
-// Set up UART communication
-void SuperPixie::init_uart(uint32_t chain_baud){
-	chain.begin(chain_baud);
+void SuperPixie::init_serial_isr(){
+	serial_checker.attach(1.0 / serial_read_hz, [this]() { consume_serial(); });
 }
+
+
+// Set up UART communication
+void SuperPixie::init_uart( uint8_t data_a_pin, uint8_t data_b_pin ){
+	debugln("----- init_uart()");
+	
+	data_a_pin_ = data_a_pin;
+    data_b_pin_ = data_b_pin;
+	
+    chain.begin(DEFAULT_CHAIN_BAUD, SWSERIAL_8N1, data_a_pin_, data_b_pin_);
+	chain.listen();
+	
+	chain.flush();
+	while(chain.available() > 0){
+		uint8_t null = chain.read();
+	}
+}
+
+
+int8_t SuperPixie::read_touch(uint8_t chain_index){
+	send_packet(chain_index, COM_GET_TOUCH_STATE, NULL_DATA, 0, false);
+	
+	uint32_t t_timeout = millis()+ACK_TIMEOUT_MS;
+	touch_response[chain_index] = false;
+	touch_state[chain_index] = -1;
+	
+	while(touch_response[chain_index] == false){
+		consume_serial();
+		
+		if(millis() >= t_timeout){
+			touch_response[chain_index] = true;
+			// timed out, leave touch_state value at -1
+		}
+	}
+	
+	return touch_state[chain_index];
+}
+
 
 // Auto chain discovery
 void SuperPixie::discover_nodes(){
-	send_packet(ADDRESS_BROADCAST, COM_RESET_CHAIN, NULL_DATA, 0, false);
-
+	debugln("----- discover_nodes()");
+	uint32_t del_time_ms = 10;
+	
 	chain_length = 0;
+	
+	//send_packet(ADDRESS_BROADCAST, COM_RESET_CHAIN, NULL_DATA, 0, false);
+	//delay(50);
+
 	uint8_t address_to_assign = 0;
 	bool solved = false;
 
+	debugln("BEGIN DISCOVERY");
 	while(solved == false){
 		uint8_t data[1] = { address_to_assign };
 		if(send_packet_and_await_ack(ADDRESS_NULL, COM_ASSIGN_ADDRESS, data, 1) == true){
-			send_packet(address_to_assign, COM_ENABLE_PROPAGATION, NULL_DATA, 0, false);
+			debug("GOT ACK FROM NODE ");
+			debugln(address_to_assign);
+			//delay(10);
+			//send_packet(address_to_assign, COM_ENABLE_PROPAGATION, NULL_DATA, 0, false);
+			if(send_packet_and_await_ack(address_to_assign, COM_ENABLE_PROPAGATION, NULL_DATA, 0) == true){
+				debug("PROPAGATION ENABLED ON NODE ");
+				debugln(address_to_assign);
+			}
+			else{
+				debug("NO RESPONSE FROM ");
+				debugln(address_to_assign);
+			}
+			//delay(10);
+			
 			address_to_assign += 1;
-			chain_length = address_to_assign;
+			
+			if(address_to_assign > chain_length){
+				chain_length = address_to_assign;
+			}
+
+			//digitalWrite(2, LOW);
+			//delay(10);
+			//digitalWrite(2, HIGH);
+			//delay(100);
 		}
 		else{
+			debug("NO ACK FROM NODE ");
+			debugln(address_to_assign);
+			//digitalWrite(2, LOW);
+			//delay(1000);
+			//digitalWrite(2, HIGH);
+			
 			//leds[35] = CRGB(0,255,0);
 			solved = true;
 		}
 	}
 	
+	
+	//delay(del_time_ms);
+	
+	//measure_chain_length();
+	
+	debug("INITIAL CHAIN LENGTH: ");
+	debugln(chain_length);
+	
 	announce_new_chain_length(chain_length);
+	
+	if(chain_length > 0){
+		touch_response = new bool[ chain_length ]; 
+		touch_state    = new int8_t[ chain_length ]; 
+	}
+	
+	//delay(del_time_ms);
+	
 }
 
 
@@ -67,6 +200,25 @@ void SuperPixie::discover_nodes(){
 
 // Send command packet to broadcast or a specific address, optionally requiring an ACK
 uint16_t SuperPixie::send_packet(uint8_t dest_address, command_t packet_type, uint8_t* data, uint8_t data_length_in_bytes, bool get_ack) {
+	
+	
+	//debug("---- send_packet(");
+	//debug(dest_address);
+	//debug(", ");
+	//debug(uint32_t(packet_type));
+	//debug(", [");
+	for(uint8_t i = 0; i < data_length_in_bytes; i++){
+		//debug(data[i]);
+		if(i+1 != data_length_in_bytes){
+			//debug(",");
+		}
+	}
+	//debug("], ");
+	//debug(data_length_in_bytes);
+	//debug(", ");
+	//debug(get_ack);
+	//debugln(")");
+
 	// Increment packet ID
 	packet_id++;
 
@@ -109,12 +261,38 @@ uint16_t SuperPixie::send_packet(uint8_t dest_address, command_t packet_type, ui
 
 	chain.write(packet_temp, 13 + data_length_in_bytes);
 	chain.flush();
+	
+	//debug("PACKET SENT: ");
+	for(uint16_t i = 0; i < 13 + data_length_in_bytes; i++){
+		//debug(packet_temp[i]);
+		//debug(",");
+	}
+	//debugln(" ");
+	
+	//debug("PACKET_ID SENT: ");
+	//debugln(packet_id);
 
 	// Return the ID the packet was assigned
 	return packet_id;
 }
 
+
 bool SuperPixie::send_packet_and_await_ack(uint8_t dest_address, command_t packet_type, uint8_t* data, uint8_t data_length_in_bytes) {
+	//debug("---- send_packet_and_await_ack(");
+	//debug(dest_address);
+	//debug(", ");
+	//debug(uint32_t(packet_type));
+	//debug(", [");
+	for(uint8_t i = 0; i < data_length_in_bytes; i++){
+		//debug(data[i]);
+		if(i+1 != data_length_in_bytes){
+			//debug(",");
+		}
+	}
+	//debug("], ");
+	//debug(data_length_in_bytes);
+	//debugln(")");
+	
 	bool success = true;
 
 	uint16_t packet_id = send_packet(dest_address, packet_type, data, data_length_in_bytes, true);
@@ -130,6 +308,8 @@ bool SuperPixie::send_packet_and_await_ack(uint8_t dest_address, command_t packe
 
 	bool got_ack = false;
 	bool got_timeout = false;
+	
+	//debugln("BEGIN ACK WAIT");
 	while (got_ack == false && got_timeout == false) {
 		if (millis() >= ack_timeout) {
 			got_timeout = true;
@@ -145,6 +325,7 @@ bool SuperPixie::send_packet_and_await_ack(uint8_t dest_address, command_t packe
 	return success;
 }
 
+
 bool SuperPixie::await_ack(uint32_t packet_id) {
 	consume_serial();
 
@@ -157,6 +338,7 @@ bool SuperPixie::await_ack(uint32_t packet_id) {
 	return false;
 }
 
+
 // Quickly shifts sync buffer left using memmove,
 // Adds newest byte at end
 void SuperPixie::feed_byte_into_sync_buffer(uint8_t incoming_byte) {
@@ -164,10 +346,12 @@ void SuperPixie::feed_byte_into_sync_buffer(uint8_t incoming_byte) {
 	sync_buffer[3] = incoming_byte;
 }
 
+
 void SuperPixie::feed_byte_into_packet_buffer(uint8_t incoming_byte) {
 	packet_buffer[packet_buffer_index] = incoming_byte;
 	packet_buffer_index++;
 }
+
 
 void SuperPixie::init_packet() {
 	memset(packet_buffer, 0, sizeof(uint8_t) * 256);
@@ -176,6 +360,7 @@ void SuperPixie::init_packet() {
 	packet_got_header = false;
 	packet_read_counter = 9;
 }
+
 
 void SuperPixie::parse_packet() {
 	uint8_t start_index = 0;
@@ -227,13 +412,11 @@ void SuperPixie::parse_packet() {
 	debug(data_length_in_bytes);
 	*/
 
-	// If sent to BROADCAST (all nodes),
-	// or specifically intended for this node,
-	// then execute the command/data:
 	if (dest_address == ADDRESS_COMMANDER) {
 		execute_packet(packet_id, origin_address, first_hop_address, packet_type, needs_ack, data_length_in_bytes, data_start_position);
 	}
 }
+
 
 void SuperPixie::execute_packet(uint16_t packet_id, uint8_t origin_address, uint8_t first_hop_address, command_t packet_type, bool needs_ack, uint8_t data_length_in_bytes, uint8_t data_start_position) {
 	if (packet_type == COM_ACK) {
@@ -260,9 +443,25 @@ void SuperPixie::execute_packet(uint16_t packet_id, uint8_t origin_address, uint
 			announce_new_chain_length(chain_length);
 		}
 	}
+	else if (packet_type == COM_TOUCH_STATE) {
+		touch_response[origin_address] = true;
+		touch_state[origin_address] = packet_buffer[data_start_position + 0];
+	}
 	else if (packet_type == COM_TOUCH_EVENT) {
-		touch_status = packet_buffer[data_start_position + 0];
-		touch_node = origin_address;
+		pinMode(2, OUTPUT);
+		
+		// Non-polling touch event
+		touch_state[origin_address] = packet_buffer[data_start_position + 0];
+		Serial.print("TOUCH ");
+		if(touch_state[origin_address] == true){
+			Serial.print("START @ ");
+			digitalWrite(2,!HIGH);
+		}
+		else{
+			Serial.print("END   @ ");
+			digitalWrite(2,!LOW);
+		}
+		Serial.println(origin_address);
 	}
 	else if (packet_type == COM_READY_STATUS) {
 		bool ready_status = packet_buffer[data_start_position + 0];
@@ -270,17 +469,103 @@ void SuperPixie::execute_packet(uint16_t packet_id, uint8_t origin_address, uint
 			waiting = false;
 		}
 	}
+	else if (packet_type == COM_PANIC) {
+		uint32_t t_start = millis();
+		
+		// Re-address orphaned node
+		uint8_t address_to_assign = 0;
+		if(first_hop_address != ADDRESS_NULL){ // Panic packet hopped at least once
+			address_to_assign = first_hop_address+1;
+		}
+		else { // First in chain, panic packet never hopped
+			address_to_assign = 0;
+		}
+		
+		debug("NODE PANIC @ ");
+		debugln(address_to_assign);
+		
+		//chain_length = 0;
+		
+		uint8_t data[1] = { address_to_assign };
+		if(send_packet_and_await_ack(ADDRESS_NULL, COM_ASSIGN_ADDRESS, data, 1) == true){
+			debug("GOT ACK FROM NODE ");
+			debugln(address_to_assign);
+			
+			if(send_packet_and_await_ack(address_to_assign, COM_ENABLE_PROPAGATION, NULL_DATA, 0) == true){
+				debug("PROPAGATION ENABLED ON NODE ");
+				debugln(address_to_assign);
+			}
+			
+			if(address_to_assign+1 > chain_length){
+				//chain_length = address_to_assign+1;
+			}
+		}
+		
+		measure_chain_length();
+		
+		uint32_t t_end = millis();
+		debug("TIME TO HEAL CHAIN: ");
+		debugln(t_end-t_start);
+		
+		//announce_new_chain_length(chain_length);
+		
+		while (chain.available() > 0) { // Flush all incoming data and start fresh
+			uint8_t byte = chain.read();
+		}
+	}
 }
+
+
+void SuperPixie::measure_chain_length(){
+	bool solved = false;
+	chain_length = 0;
+	while(solved == false){
+		uint8_t address = chain_length;
+		if(send_packet_and_await_ack(address, COM_PROBE, NULL_DATA, 0) == true){
+			chain_length++;
+		}
+		else{
+			//chain_length--;
+			solved = true;
+		}
+	}
+	
+	debug("NEW CHAIN LENGTH: ");
+	debugln(chain_length);
+	
+	if(chain_length > 0){
+		announce_new_chain_length(chain_length);
+	}
+}
+
 
 void SuperPixie::announce_new_chain_length(uint8_t length){
+	debug("ANNOUNCING NEW CHAIN LENGTH: ");
+	debugln(length);
 	uint8_t data[1] = { length };
 	send_packet(ADDRESS_BROADCAST, COM_SET_CHAIN_LENGTH, data, 1, false);
+	//send_packet(ADDRESS_BROADCAST, COM_SET_CHAIN_LENGTH, data, 1, false);
+	//send_packet(ADDRESS_BROADCAST, COM_SET_CHAIN_LENGTH, data, 1, false);
 }
 
+
 void SuperPixie::consume_serial() {
+	static uint8_t iter = 0;
+	
+	iter++;
+	
+	if(iter == 10){
+		iter = 0;
+		//send_packet(ADDRESS_BROADCAST, COM_NULL, NULL_DATA, 0, false);
+	}
+	//Serial.println(millis());
+	
 	// Data returning to chain commander
 	while (chain.available() > 0) {
 		uint8_t byte = chain.read();
+		
+		//debug("RX: ");
+		//debugln(byte);
 		//blink();
 
 		feed_byte_into_sync_buffer(byte);
@@ -308,7 +593,7 @@ void SuperPixie::consume_serial() {
 					//debugln("GOT HEADER");
 					packet_read_counter = byte;  // Currently reading DATA_LENGTH_IN_BYTES byte
 					if (packet_read_counter == 0) {
-					got_data = true;
+						got_data = true;
 					}
 				} else if (packet_got_header == true) {
 					got_data = true;
@@ -323,6 +608,7 @@ void SuperPixie::consume_serial() {
 		}
 	}
 }
+
 
 void SuperPixie::set_string( char* string ){
 	uint8_t length = strlen(string);
@@ -351,15 +637,18 @@ void SuperPixie::set_scroll_speed( uint16_t scroll_time_ms, uint16_t hold_time_m
 	send_packet(ADDRESS_BROADCAST, COM_SET_SCROLL_SPEED, scroll_speed_data, 4, false);
 }
 
+
 void SuperPixie::set_brightness(float brightness){
 	uint8_t data[1] = { brightness*255 };
 	send_packet(ADDRESS_BROADCAST, COM_SET_BRIGHTNESS, data, 1, false);
 }
 
+
 void SuperPixie::set_transition_type(transition_type_t type){
 	uint8_t transition_data[1] = { type };
 	send_packet(ADDRESS_BROADCAST, COM_SET_TRANSITION_TYPE, transition_data, 1, false);
 }
+
 
 void SuperPixie::set_transition_duration_ms(uint16_t duration_ms){
 	uint8_t duration_high = get_byte_from_uint16(duration_ms, 1);
@@ -369,32 +658,44 @@ void SuperPixie::set_transition_duration_ms(uint16_t duration_ms){
 	send_packet(ADDRESS_BROADCAST, COM_SET_TRANSITION_DURATION_MS, duration_data, 2, false);
 }
 
+
 void SuperPixie::set_frame_blending(float blend_val){
 	uint8_t blend_data[1] = { blend_val*255 };
 	send_packet(ADDRESS_BROADCAST, COM_SET_FRAME_BLENDING, blend_data, 1, false);
 }
 
+
 void SuperPixie::set_color(CRGB color) {
 	set_color(color, color);
 }
+
 
 void SuperPixie::set_color(CRGB color_a, CRGB color_b) {
 	uint8_t color_data[6] = { color_a.r, color_a.g, color_a.b, color_b.r, color_b.g, color_b.b };
 	send_packet(ADDRESS_BROADCAST, COM_SET_COLORS, color_data, 6, false);
 }
 
+
 void SuperPixie::set_gradient_type(gradient_type_t type){
 	uint8_t gradient_data[1] = { type };
 	send_packet(ADDRESS_BROADCAST, COM_SET_GRADIENT_TYPE, gradient_data, 1, false);
 }
 
+
 void SuperPixie::clear(){
 	
 }
 
+
+void SuperPixie::hold(){
+	send_packet(ADDRESS_BROADCAST, COM_HOLD_IMAGE, NULL_DATA, 0, false);
+}
+
+
 void SuperPixie::show(){
 	send_packet(ADDRESS_BROADCAST, COM_SHOW, NULL_DATA, 0, false);
 }
+
 
 void SuperPixie::wait(){
 	static uint32_t t_next_check = micros();
