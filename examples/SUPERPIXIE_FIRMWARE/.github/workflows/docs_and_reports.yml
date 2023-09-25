@@ -1,0 +1,47 @@
+name: "Docs and Reports" 
+on:
+  push: # see: https://help.github.com/en/actions/reference/events-that-trigger-workflows#pull-request-event-pull_request
+    paths:
+    - '**.ino'
+    - '**.cpp'
+    - '**.h'
+    - '**.sh'
+    - '**.py'
+    - '**.css'
+    - '**Doxyfile'
+    - '**doxyignore'
+    - 'keywords.txt'
+    - '**docs_and_reports.yml'
+  pull_request:
+    paths:
+    - '**.ino'
+    - '**.cpp'
+    - '**.h'
+    - '**.sh'
+    - '**.py'
+    - '**.css'
+    - '**Doxyfile'
+    - '**doxyignore'
+    - 'keywords.txt'
+    - '**docs_and_reports.yml'
+jobs:
+  build:
+    name: "Docs and Reports"
+    runs-on: ubuntu-latest
+    
+    env:
+      REQUIRED_LIBRARIES: FastLED, FixedPoints
+      GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Work around GitHub permission issue
+        run: "sudo git config --global --add safe.directory /github/workspace"
+        
+      - name: Checkout Repo
+        uses: actions/checkout@v2
+          
+      - name: Generate Issues From TODOs
+        uses: alstr/todo-to-issue-action@v4.3
+        id: todo
+        with:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}

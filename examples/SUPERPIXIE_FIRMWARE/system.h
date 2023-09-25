@@ -1,254 +1,294 @@
-//#include "esp32-hal-uart.h"
-extern void init_leds();
+//----------------------------------------------------------------
+// These are defined later in the scope in SuperPixie_Firmware.ino
+extern void loop_cpu(void *parameter);
+extern void loop_gpu(void *parameter);
 
-// Set pin modes
-void init_gpio() {
-  pinMode(2, OUTPUT);
+extern character_state CHARACTER_STATE[2];
+extern bool character_state_changed;
+extern uint8_t current_character_state;
+
+extern void init_storage();
+
+extern void init_chain_uart();
+extern void send_touch_event();
+//----------------------------------------------------------------
+
+// Timekeeping on the GPU core
+uint32_t time_us_now = 0;
+uint32_t time_ms_now = 0;
+
+// Halts the GPU core during sensitive changes
+bool freeze_led_image = false;
+
+// Set to true every time that a transition completes, and is
+// read/reset every time check_transition_completion() is called.
+// every call to trigger_transition() forces this to false again
+bool transition_complete_flag = false;
+
+//----------------------------------------------------------------------------------------------
+// Three system_state structs are kept in memory, and work together during display transitions.
+// When a display transition occurs, all values in the system_state struct are interpolated from
+// the current state to the new one over a period of TRANSITION_MS.
+//
+// When the transition is complete, current_system_state's binary value inverts, making the new
+// system_state the default one. The output of the transition and final settings are written to
+// the lone SYSTEM_STATE struct for reading throughout the rest of the system.
+system_state SYSTEM_STATE;
+system_state SYSTEM_STATE_INTERNAL[2];
+bool system_state_changed = false;
+uint8_t current_system_state = 0;
+float system_state_transition_progress = 1.0;
+float system_state_transition_progress_shaped = 1.0;
+uint32_t transition_start_ms = 0;
+uint32_t transition_end_ms = 0;
+bool transition_running = false;
+//----------------------------------------------------------------------------------------------
+
+TaskHandle_t cpu_task = NULL;
+TaskHandle_t gpu_task = NULL;
+
+uint32_t last_gpu_check_in = 0;
+
+bool system_ready = false;
+
+// #############################################################################################
+// Init dual core system on startup
+void init_cores() {
+  //-------------------------------------
+  // Initialize "GPU" core
+  xTaskCreatePinnedToCore(
+    loop_gpu,      // Task function
+    "Loop (GPU)",  // Task name
+    8000,          // Stack size
+    NULL,          // Task parameter
+    1,             // Priority
+    &gpu_task,     // Task handle
+    1              // Uses Core 0
+  );
+  //-------------------------------------
+
+  //-------------------------------------
+  // Initialize "CPU" core
+  xTaskCreatePinnedToCore(
+    loop_cpu,      // Task function
+    "Loop (CPU)",  // Task name
+    8000,          // Stack size
+    NULL,          // Task parameter
+    1,             // Priority
+    &cpu_task,     // Task handle
+    0              // Uses Core 1
+  );
+  //-------------------------------------
 }
+// #############################################################################################
 
-void set_new_baud_rate(uint32_t new_baud) {
-  chain_left.flush();
-  chain_right.flush();
 
-  chain_left.begin(new_baud);
-  chain_right.begin(new_baud);
+// #############################################################################################
+// Initialize the system_states to default values on boot
+void init_system_states() {
+  memcpy(&SYSTEM_STATE, &SYSTEM_STATE_DEFAULTS, sizeof(system_state));
 
-  CONFIG.BAUD = new_baud;
+  memcpy(&SYSTEM_STATE_INTERNAL[0], &SYSTEM_STATE, sizeof(system_state));
+  memcpy(&SYSTEM_STATE_INTERNAL[1], &SYSTEM_STATE, sizeof(system_state));
+
+  system_state_changed = false;
+  current_system_state = 0;
+  system_state_transition_progress = 1.0;
+  system_state_transition_progress_shaped = 1.0;
+  transition_start_ms = 0;
+  transition_end_ms = 0;
 }
+// #############################################################################################
 
-// Set up UART communication
-void init_uart() {
-  chain_left.begin(DEFAULT_BAUD_RATE, SERIAL_8N1, 23, 22);
-  chain_right.begin(DEFAULT_BAUD_RATE);
+
+// #############################################################################################
+// Initialize the character_states to default values on boot
+void init_character_states() {
+  memcpy(&CHARACTER_STATE[0], &CHARACTER_STATE_DEFAULTS, sizeof(character_state));
+  memcpy(&CHARACTER_STATE[1], &CHARACTER_STATE_DEFAULTS, sizeof(character_state));
+
+  character_state_changed = false;
+  current_character_state = 0;
 }
+// #############################################################################################
 
-// Reset config struct to default values
-void set_config_defaults() {
-  character empty_char;
-  empty_char.character = ' ';
-  empty_char.pos_x = 0.0;
-  empty_char.pos_y = 0.0;
-  empty_char.scale_x = 1.0;
-  empty_char.scale_y = 1.0;
-  empty_char.rotation = 0.0;
-  empty_char.opacity = 0.0;
 
-  CONFIG.LOCAL_ADDRESS = ADDRESS_NULL;
-  CONFIG.PROPAGATION = false;
-  CONFIG.BAUD = 9600;
-  CONFIG.DEBUG_LED = 0;
+// #############################################################################################
+// Very first function, kicks off initializations for various hardware peripherals
+void init_system() {
+  //----------------------------
+  // Initialize UART chain
+  init_chain_uart();
+  //----------------------------
+  
+  //------------------------------------
+  // Initialize the system state structs
+  init_storage();
+  init_system_states();
+  init_character_states();
+  //------------------------------------
 
-  CONFIG.DISPLAY_COLOR_A = CRGB(255, 0, 0);
-  CONFIG.DISPLAY_COLOR_B = CRGB(255, 0, 0);
-
-  CONFIG.GRADIENT_TYPE = GRADIENT_NONE;
-
-  CONFIG.FX_COLOR = CRGB(0, 0, 0);
-  CONFIG.FX_OPACITY = 0.0;
-  CONFIG.FX_BLUR = 0.0;
-
-  CONFIG.CHARACTER_SCALE = 1.0;
-
-  CONFIG.TRANSITION_TYPE = TRANSITION_INSTANT;
-  CONFIG.TRANSITION_DURATION_MS = 0;
-
-  CONFIG.CURRENT_CHARACTER = empty_char;
-  CONFIG.NEW_CHARACTER = empty_char;
-
-  CONFIG.MASTER_OPACITY = 1.0;
-
-  CONFIG.FRAME_BLENDING = 0.0;
-
-  CONFIG.TOUCH_VAL = 255;
-  CONFIG.TOUCH_THRESHOLD = 50;
-  CONFIG.TOUCH_ACTIVE = false;
-
-  CONFIG.FORCE_TRANSITION = true;
-
-  CONFIG.CHAIN_LENGTH = 0;
-
-  CONFIG.SCROLL_TIME_MS = 150;
-  CONFIG.SCROLL_HOLD_TIME_MS = 250;
-
-  CONFIG.READY = true;
+  init_fs();
 }
+// #############################################################################################
 
-// Blink debug LED
-void blink() {
-  digitalWrite(2, HIGH);
-  delay(10);
-  digitalWrite(2, LOW);
-}
 
-// Parse/propagate chain data
-void run_node(uint32_t t_now) {
-  static uint32_t next_announcement = 0;
-  if (CONFIG.LOCAL_ADDRESS == ADDRESS_NULL) {
-    if (t_now >= next_announcement) {
-      next_announcement = t_now + (ANOUNCEMENT_INTERVAL_MS * 1000);
-      announce_to_chain();
+// #############################################################################################
+// Interpolate the system states between old and new, swapping them when transitions are complete
+void run_system_transition() {
+  freeze_led_image = true;
+
+  if (fade_in_complete == false) {
+    GLOBAL_LED_BRIGHTNESS += 0.01;
+
+    if (GLOBAL_LED_BRIGHTNESS >= 1.0) {  // If target met
+      GLOBAL_LED_BRIGHTNESS = 1.0;
+      fade_in_complete = true;
+    } else if (debug_led_opacity > 0.0) {  // If fade in should be instant for debugging
+      GLOBAL_LED_BRIGHTNESS = 1.0;
+      fade_in_complete = true;
     }
   }
 
-  while (chain_left.available() > 0 || chain_right.available() > 0) {
-    // Data coming from chain commander
-    if (chain_left.available() > 0) {
-      uint8_t byte = chain_left.read();
+  /*
+  Serial.print("{ ");
+  Serial.print(CHARACTER_STATE[current_character_state].OPACITY);
+  Serial.print(", ");
+  Serial.print(CHARACTER_STATE[!current_character_state].OPACITY);
+  Serial.println(" }");
+  */
 
-      if (CONFIG.PROPAGATION == true && debug_mode == false) {
-        chain_right.write(byte);
-      }
+  if (transition_running == true) {
+    uint32_t time_elapsed_ms = time_ms_now - transition_start_ms;
+    uint32_t transition_duration_ms = SYSTEM_STATE_INTERNAL[!current_system_state].TRANSITION_DURATION_MS;
+    system_state_transition_progress = clip_float(float(time_elapsed_ms) / float(transition_duration_ms));
 
-      //debug("RX: ");
-      //debugln(byte);
-
-      feed_byte_into_sync_buffer(byte);
-
-      // Packet started
-      if (sync_buffer[0] == SYNC_PATTERN_1) {
-        if (sync_buffer[1] == SYNC_PATTERN_2) {
-          if (sync_buffer[2] == SYNC_PATTERN_3) {
-            if (sync_buffer[3] == SYNC_PATTERN_4) {
-              digitalWrite(2, HIGH);
-              //debugln("GOT SYNC");
-              init_packet();
-            }
-          }
-        }
-      } else if (packet_started) {
-        bool got_data = false;
-
-        feed_byte_into_packet_buffer(byte);
-        packet_read_counter--;
-        //debug("packet_read_counter = ");
-        //debugln(packet_read_counter);
-
-        if (packet_read_counter == 4) {  // Alter first Hop Address byte
-          if (byte == ADDRESS_NULL) {
-            byte = CONFIG.LOCAL_ADDRESS;
-          }
-        }
-
-        if (packet_read_counter == 0) {
-          if (packet_got_header == false) {
-            packet_got_header = true;
-            //debugln("GOT HEADER");
-            packet_read_counter = byte;  // Currently reading DATA_LENGTH_IN_BYTES byte
-            if (packet_read_counter == 0) {
-              got_data = true;
-            }
-          } else if (packet_got_header == true) {
-            got_data = true;
-          }
-        }
-
-        if (got_data == true) {
-          //debugln("GOT DATA, PARSING PACKET");
-          parse_packet(t_now);
-          packet_started = false;
-          digitalWrite(2, LOW);
-        }
-      }
+    if (SYSTEM_STATE_INTERNAL[!current_system_state].TRANSITION_TYPE == TRANSITION_INSTANT) {
+      system_state_transition_progress = 1.0;
+      //here_flag = true;
     }
 
-    // -----------------------------------------------------------------
-    // Data returning to chain commander
-    if (chain_right.available() > 0) {
-      uint8_t byte = chain_right.read();
-      chain_left.write(byte);
+    system_state_transition_progress_shaped = interpolate_curve(system_state_transition_progress, SYSTEM_STATE.TRANSITION_INTERPOLATION);
 
-      feed_byte_into_return_sync_buffer(byte);
+    SYSTEM_STATE.BRIGHTNESS = interpolate_float(
+      SYSTEM_STATE_INTERNAL[current_system_state].BRIGHTNESS,
+      SYSTEM_STATE_INTERNAL[!current_system_state].BRIGHTNESS,
+      system_state_transition_progress_shaped);
 
-      // Packet started
-      if (return_sync_buffer[0] == SYNC_PATTERN_1) {
-        if (return_sync_buffer[1] == SYNC_PATTERN_2) {
-          if (return_sync_buffer[2] == SYNC_PATTERN_3) {
-            if (return_sync_buffer[3] == SYNC_PATTERN_4) {
-              //digitalWrite(2, HIGH);
-              debugln("GOT RETURNING SYNC");
-              init_return_packet();
-            }
-          }
-        }
-      } else if (return_packet_started) {
-        bool return_got_data = false;
+    SYSTEM_STATE.BACKLIGHT_COLOR = interpolate_CRGBF(
+      SYSTEM_STATE_INTERNAL[current_system_state].BACKLIGHT_COLOR,
+      SYSTEM_STATE_INTERNAL[!current_system_state].BACKLIGHT_COLOR,
+      system_state_transition_progress_shaped);
 
-        feed_byte_into_return_packet_buffer(byte);
-        return_packet_read_counter--;
-        debug("return_packet_read_counter = ");
-        debugln(return_packet_read_counter);
+    SYSTEM_STATE.BACKLIGHT_BRIGHTNESS = interpolate_float(
+      SYSTEM_STATE_INTERNAL[current_system_state].BACKLIGHT_BRIGHTNESS,
+      SYSTEM_STATE_INTERNAL[!current_system_state].BACKLIGHT_BRIGHTNESS,
+      system_state_transition_progress_shaped);
 
-        if (return_packet_read_counter == 4) {  // Alter first Hop Address byte
-          if (byte == ADDRESS_NULL) {
-            byte = CONFIG.LOCAL_ADDRESS;
-          }
-        }
+    SYSTEM_STATE.DISPLAY_COLOR_A = interpolate_CRGBF(
+      SYSTEM_STATE_INTERNAL[current_system_state].DISPLAY_COLOR_A,
+      SYSTEM_STATE_INTERNAL[!current_system_state].DISPLAY_COLOR_A,
+      system_state_transition_progress_shaped);
 
-        if (return_packet_read_counter == 0) {
-          if (return_packet_got_header == false) {
-            return_packet_got_header = true;
-            debugln("GOT HEADER");
-            return_packet_read_counter = byte;  // Currently reading DATA_LENGTH_IN_BYTES byte
-            if (return_packet_read_counter == 0) {
-              return_got_data = true;
-            }
-          } else if (return_packet_got_header == true) {
-            return_got_data = true;
-          }
-        }
+    SYSTEM_STATE.DISPLAY_COLOR_B = interpolate_CRGBF(
+      SYSTEM_STATE_INTERNAL[current_system_state].DISPLAY_COLOR_B,
+      SYSTEM_STATE_INTERNAL[!current_system_state].DISPLAY_COLOR_B,
+      system_state_transition_progress_shaped);
 
-        if (return_got_data == true) {
-          debugln("GOT DATA, PARSING RETURN PACKET");
-          parse_return_packet(t_now);
-          return_packet_started = false;
-          //digitalWrite(2, LOW);
-        }
+    SYSTEM_STATE.DISPLAY_BACKGROUND_COLOR_A = interpolate_CRGBF(
+      SYSTEM_STATE_INTERNAL[current_system_state].DISPLAY_BACKGROUND_COLOR_A,
+      SYSTEM_STATE_INTERNAL[!current_system_state].DISPLAY_BACKGROUND_COLOR_A,
+      system_state_transition_progress_shaped);
+
+    SYSTEM_STATE.DISPLAY_BACKGROUND_COLOR_B = interpolate_CRGBF(
+      SYSTEM_STATE_INTERNAL[current_system_state].DISPLAY_BACKGROUND_COLOR_B,
+      SYSTEM_STATE_INTERNAL[!current_system_state].DISPLAY_BACKGROUND_COLOR_B,
+      system_state_transition_progress_shaped);
+
+    if (system_state_transition_progress >= 1.0) {
+      if (transition_running == true) {
+        transition_running = false;
+        transition_complete_flag = true;
+        system_state_transition_progress = 0.0;
+        system_state_transition_progress_shaped = 0.0;
       }
+
+      if (system_state_changed == true) {
+        memcpy(&SYSTEM_STATE_INTERNAL[current_system_state], &SYSTEM_STATE_INTERNAL[!current_system_state], sizeof(system_state));
+        current_system_state = !current_system_state;
+        system_state_changed = false;
+      }
+
+      if (character_state_changed == true) {
+        memcpy(&CHARACTER_STATE[current_character_state], &CHARACTER_STATE[!current_character_state], sizeof(current_character_state));
+        current_character_state = !current_character_state;
+        //CHARACTER_STATE[current_character_state].OPACITY = 1.0;
+        //CHARACTER_STATE[!current_character_state].OPACITY = 0.0;
+        character_state_changed = false;
+      }
+
+      transition_running = false;
     }
   }
-}
 
-void run_touch() {
-  CONFIG.TOUCH_VAL = touchRead(TOUCH_PIN);
+  freeze_led_image = false;
+}
+// #############################################################################################
+
+
+// #############################################################################################
+// Causes run_system_transition() to begin interpolating the system states
+// run_character_transitions() is also triggered by these changes
+// This is functionally a "show()" equivalent
+void trigger_transition() {
+  transition_start_ms = time_ms_now;
+
+  if (SYSTEM_STATE_INTERNAL[!current_system_state].TRANSITION_TYPE == TRANSITION_INSTANT) {
+    system_state_transition_progress = 1.0;
+    system_state_transition_progress_shaped = 1.0;
+  } else {
+    system_state_transition_progress = 0.0;
+    system_state_transition_progress_shaped = 0.0;
+  }
+
+  transition_complete_flag = false;
+  transition_running = true;
+}
+// #############################################################################################
+
+
+// #############################################################################################
+// Set the transition time in milliseconds
+void set_transition_time_ms(uint16_t time_ms) {
+  SYSTEM_STATE_INTERNAL[!current_system_state].TRANSITION_DURATION_MS = time_ms;
+  system_state_changed = true;
+}
+// #############################################################################################
+
+
+// #############################################################################################
+// Set the transition type
+void set_transition_type(uint8_t transition_type) {
+  SYSTEM_STATE_INTERNAL[!current_system_state].TRANSITION_TYPE = transition_type;
+  system_state_changed = true;
+}
+// #############################################################################################
+
+
+void check_touch() {
+  SYSTEM_STATE.TOUCH_VALUE = touchRead(TOUCH_PIN);
+
+  float touch_strength = 1.0-clip_float((SYSTEM_STATE.TOUCH_VALUE - STORAGE.TOUCH_LOW_LEVEL) / (STORAGE.TOUCH_HIGH_LEVEL - STORAGE.TOUCH_LOW_LEVEL));
 
   bool touching = false;
-  if (CONFIG.TOUCH_VAL <= CONFIG.TOUCH_THRESHOLD) {
+  if (touch_strength <= STORAGE.TOUCH_THRESHOLD) {
     touching = true;
   }
 
-  if (touching != CONFIG.TOUCH_ACTIVE) {
-    /*
-    if(touching == true){
-      debugln("---------- TOUCH START");
+  if (touching != SYSTEM_STATE.TOUCH_ACTIVE) {
+    if (time_ms_now >= 500) {  // If >= half second since boot
+      SYSTEM_STATE.TOUCH_ACTIVE = touching;
+      send_touch_event();
     }
-    else{
-      debugln("------------ TOUCH END");
-    }
-    */
-
-    CONFIG.TOUCH_ACTIVE = touching;
-    send_touch_event();
   }
-
-  //debug("TOUCH: ");
-  //debugln(CONFIG.TOUCH_VAL);
-}
-
-// Bootup sequence
-void init_system() {
-  init_gpio();
-  init_uart();
-  init_leds();
-
-  // Disable Wi-Fi
-  WiFi.mode(WIFI_OFF);
-
-  set_config_defaults();
-}
-
-void run_fps(uint32_t t_now) {
-  static uint32_t last_frame_us = 0;
-  current_frame_duration_us = t_now - last_frame_us;
-
-  last_frame_us = t_now;
 }

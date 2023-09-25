@@ -1,14 +1,33 @@
-// Pull a specific byte from a 16-bit integer
-uint8_t get_byte_from_uint16(uint16_t input, uint8_t byte_number) {
-  uint8_t byte = uint32_t(input >> (byte_number << 3));
-  return byte;
+inline uint8_t get_byte_from_16_bit(uint16_t input, uint8_t byte_half) {
+  uint8_t input_high = input >> 8;
+  uint8_t input_low = (input << 8) >> 8;
+
+  if (byte_half == HIGH) {
+    return input_high;
+  } else if (byte_half == LOW) {
+    return input_low;
+  }
+
+  // Normally never reached
+  return 0;
 }
 
-// Pull a specific byte from a 32-bit integer
-uint8_t get_byte_from_uint32(uint32_t input, uint8_t byte_number) {
-  uint8_t byte = uint32_t(input >> (byte_number << 3));
-  return byte;
+inline uint8_t byte_to_padded_nibble(uint8_t b, uint8_t nibble_half) {
+  uint8_t input = b;
+
+  if (nibble_half == HIGH) {
+    input = input >> 4;  // Wipe out bottom half
+    return input;
+  } else if (nibble_half == LOW) {
+    input = input << 4;  // Wipe out top half
+    input = input >> 4;
+    return input;
+  }
+
+  // Normally never reached
+  return 0;
 }
+
 
 void integer_to_ascii(uint32_t input_integer, char* output_array) {
   // Restrict the integer to the range of 0 to 999

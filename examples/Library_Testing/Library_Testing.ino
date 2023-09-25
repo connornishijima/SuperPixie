@@ -3,7 +3,7 @@
 SuperPixie pix;
 
 //CRGB incandescent_lookup = CRGB(255*1.0000, 255*0.4453, 255*0.1562);
-CRGB incandescent_lookup = CRGB(255 * (1.0000 * 1.0000), 255 * (0.4453 * 0.4453), 255 * (0.1562 * 0.1562));
+CRGB incandescent_lookup = CRGB(255 * (1.0000), 255 * (0.4453), 255 * (0.1562));
 CRGB incandescent_lookup_cold = CRGB(255 * 1.0000, 128 * 0.4453, 128 * 0.1562);
 
 CRGB tint(CRGB light_color, CRGB tint_color) {
@@ -41,10 +41,10 @@ void scroll_chars() {
   pix.set_color(CHSV(hue, 210, 255), CHSV(hue, 255, 255));
   hue+=4;
   */
-  pix.hold();
-  pix.set_string(char_set);
-  pix.show();
-  
+  //pix.hold();
+  //pix.set_string(char_set);
+  //pix.show();
+
   //Serial.println(char_set);
   delay(500);
 }
@@ -86,32 +86,65 @@ void cycle_numbers() {
 
 void setup() {
   //Serial.begin(230400);
-  pix.begin(4, 5, 9600);
+  //delay(100);
+  pix.begin(4, 5);
+  //delay(100);
+
+  for (uint8_t node = 0; node < pix.chain_length; node++) {
+    pix.set_character(' ', node);
+  }
+  pix.show();
+  pix.wait();
+
+  pix.set_transition_type(TRANSITION_SPIN_LEFT);
+  pix.set_transition_duration_ms(250);
+  pix.set_transition_interpolation(S_CURVE_SOFT);
+
+  //pix.set_backlight_color(CRGB(0, 255, 64));
   pix.set_brightness(1.0);
+  //pix.set_frame_blending(0.95);
 
-  pix.set_transition_type(TRANSITION_SPIN_HALF_RIGHT);
-  pix.set_transition_duration_ms(200);
-  pix.set_frame_blending(0.00);
-  
-  pix.set_color(incandescent_lookup, incandescent_lookup_cold);
+  //pix.set_debug_overlay_opacity(0.25);
+
+  //pix.set_color(incandescent_lookup, incandescent_lookup_cold);
   //pix.set_color(incandescent_lookup);
+  pix.set_backlight_color(incandescent_lookup);
   //pix.set_color(CRGB(50, 255, 50), CRGB(0, 255, 0));
-  //pix.set_color(CHSV(10, 255, 255));
-  //pix.set_color(CRGB(255, 0, 0));
+  //pix.set_color(CHSV(10, 0, 255));
+  //pix.set_color(CHSV(190, 255, 255));
+  //pix.set_color(CHSV(18, 210, 255), CHSV(18, 255, 255));
+  //pix.set_color(CHSV(127, 210, 255));
 
-  pix.set_gradient_type(GRADIENT_BRIGHTNESS);
+  //pix.set_gradient_type(GRADIENT_HORIZONTAL_MIRRORED);
+  pix.set_color(CHSV(0-90, 255, 255), CHSV(0, 255, 255));
 
-  pix.set_scroll_speed( 250, 50 );
+  //pix.set_scroll_speed( 250, 50 );
+  //pix.set_scroll_speed( 750, 75 );
 }
 
 void loop() {
-  //scroll_chars();
-  cycle_numbers();
-  cycle_numbers();
-  cycle_numbers();
-  cycle_numbers();
-  //Serial.println(pix.read_touch(2));
-  //delay(10);
-  pix.scroll_string("Hello!");
-  delay(4000);
+  static uint8_t hue = 0;
+  static uint8_t current_character = 33;
+
+  for (uint8_t node = 0; node < pix.chain_length; node++) {
+    pix.set_backlight_color(CHSV(hue + 30 * node, 255, 255), node);
+    pix.set_color(CHSV(hue + 30 * node, 255, 255), CHSV(hue + 15 + 30 * node, 255, 255), node);
+    //pix.set_character(current_character + node, node);
+  }
+
+  char char_array[5] = { 0, 0, 0, 0, 0 };
+  for (uint8_t node = 0; node < pix.chain_length; node++) {
+    char_array[node] = current_character + node;
+  }
+
+  pix.set_string(char_array);
+
+  pix.show();
+  pix.wait();
+
+  hue += 30;
+  current_character += 1;
+  if (current_character >= 124) {
+    current_character = 33;
+  }
 }
